@@ -10,17 +10,16 @@ The firmware is designed with modularity in mind, allowing the set of connected 
 ### 2.1. Raspi Pico
 * **Microcontroller**: Raspberry Pi Pico (RP2040).
 * **Pinout & Wiring**:
-  * Defines all GPIO pin allocations, SPI bus assignments (shared/dedicated buses for MAX6675 sensors and SSD1306 displays), hardware PWM output pins (for actors), Chip Select (`CS`) lines, Data/Command (`DC`), Reset (`RES`), and USB CDC communication.
-  * Wiring details will be specified as pin choices and hardware interfaces are finalized.
+  * All GPIO pin allocations—including hardware PWM outputs for actors, SPI bus assignments (SCK, MOSI, MISO), individual Chip Select (`CS`) lines for sensors and displays, Data/Command (`D/C`), and Reset (`RESET`) pins—are defined in `config.json` and parsed at build time.
 
 ### 2.2. Actors
 Actors represent controllable hardware output devices on the coffee roaster.
 * **Initial Actors**:
-  1. **Fan**: Driven via PWM.
-  2. **Heating Device**: Driven via PWM.
+  1. **Fan**: Driven via high-frequency hardware PWM (Default frequency: `25000` Hz / 25 kHz).
+  2. **Heating Device**: Driven via low-frequency hardware PWM (Default frequency: `2` Hz, e.g. for SSR control).
 * **PWM Requirements**:
-  * Different actors have distinct PWM frequencies.
-  * Duty cycles range from 0% to 100%, controllable via Modbus RTU from Artisan.
+  * Each actor's target PWM frequency (`pwm_frequency_hz`) is defined in `config.json` and parsed at build time.
+  * Duty cycles range from 0% to 100%, controllable via Modbus RTU holding registers from Artisan.
 * **Extensibility**: The system must support adding additional actors (e.g., agitator motor, cooling fan) dynamically via configuration.
 
 ### 2.3. Sensors
@@ -31,7 +30,8 @@ Sensors monitor physical state metrics of the roasting process.
 
 ### 2.4. Displays
 Every actor and every sensor is paired with its own dedicated physical display to provide local visual feedback.
-* **Hardware**: SSD1306 OLED displays operating over SPI interface.
+* **Hardware & Resolution**: SSD1306 OLED displays operating over SPI interface with a fixed resolution of **128x64 pixels**.
+* **Configuration & Bus Parameters**: SPI bus assignments, CS pin per display, shared Data/Command (`dc_pin`), Reset (`reset_pin`), display refresh rate (`update_rate_ms`), and diagram time window (`graph_time_window_s`) are defined in `config.json` and parsed at build time.
 * **Actor Display Content**:
   * **Actor Name**: As defined in the configuration file.
   * **Current Value**: Displayed as an exact percentage (0–100%).
@@ -65,11 +65,19 @@ Every actor and every sensor is paired with its own dedicated physical display t
 * **Format & Storage**: The system configuration is defined in a `config.json` file.
 * **Build-Time Processing**: The `config.json` file is parsed at **pre-compile / build time** (via a generator script during the build process). This creates static C++ configuration data structures embedded directly into firmware memory, avoiding runtime JSON parsing overhead and dynamic memory allocation on the Pico.
 * **Configuration Scope**:
-  * **System Settings**: Device identifier, Modbus Slave ID.
-  * **Actors Definition**: Name, ID, hardware PWM GPIO pin, target PWM frequency (Hz), Modbus holding register mapping, and paired OLED display configuration.
-  * **Sensors Definition**: Name, ID, sensor chip type (e.g. MAX6675), SPI bus & pin assignments (SCK, SO, CS), Modbus input register mapping, and paired OLED display configuration.
-  * **Displays Definition**: Display resolution, shared SPI bus pins (SCK, MOSI, D/C, RESET), and individual CS pin assignments for each actor/sensor screen.
+  * **System Settings**: Device identifier, Modbus Slave ID (`modbus_slave_id`).
+  * **Actors Definition**: Name, ID, hardware PWM GPIO pin, target PWM frequency (Hz), Modbus holding register assignment (`modbus_holding_reg`), and paired OLED display configuration.
+  * **Sensors Definition**: Name, ID, sensor chip type (e.g. MAX6675), SPI bus & pin assignments (SCK, SO, CS), Modbus input register assignment (`modbus_input_reg`), and paired OLED display configuration.
+  * **Displays Definition**: Shared SPI bus pins (SCK, MOSI, D/C, RESET), update rates (`update_rate_ms`), trend diagram time window (`graph_time_window_s`), and individual CS pin assignments for each actor/sensor screen (fixed 128x64 resolution).
 * **Configuration Example**: See [Appendix B](#appendix-b-configuration-example-configjson) for a complete `config.json` example schema.
+
+### 3.3. Modbus Communication
+* **Transport**: Modbus RTU protocol over Pico USB CDC virtual serial stream connected to host laptop.
+* **Slave Address**: Parsed dynamically from `config.json` (`system.modbus_slave_id`, default `1`).
+* **Register Architecture**:
+  * **Holding Registers (`modbus_holding_reg`)**: Read/Write registers mapped to **Actors** for Artisan control. Values represent duty cycle percentages (`0` to `100` %).
+  * **Input Registers (`modbus_input_reg`)**: Read-only registers mapped to **Sensors** for Artisan telemetry polling.
+* **Data Scaling Strategy**: Fixed-point 1 decimal place (Scale factor `x10`). Temperature readings (e.g., `204.5°C`) are transmitted as signed 16-bit integer values (e.g., `2045`). Artisan applies divisor `/10`.
 
 ---
 
@@ -78,22 +86,11 @@ Every actor and every sensor is paired with its own dedicated physical display t
 
 1. **Programming Language & Framework**: **[Decided]** Raspberry Pi Pico C/C++ SDK.
 2. **Configuration Format & Parsing**: **[Decided]** `config.json` file parsed at pre-compile/build time into static C++ configuration structures.
-3. **Modbus RTU Specifications**:
-   - Target Modbus Slave ID (default `1`)?
-   - Register mapping scheme for Artisan (holding registers for controls, input registers for sensors, data scaling)?
-4. **Raspi Pico Pinout & Wiring (Chapter 2.1)**:
-   - What GPIO pins will be allocated for the PWM actor outputs (Fan and Heating Device)?
-   - What SPI peripheral (SPI0 vs. SPI1) and GPIO pins will be assigned for the MAX6675 thermocouple amplifier (SCK, SO/MISO, CS)?
-   - What SPI peripheral and GPIO pins will be assigned for the SSD1306 OLED displays (SCK, MOSI, CS per display, shared DC & RESET)?
-   - What power rails (3.3V vs. 5V VBUS/VREG) will supply power to the OLED displays and MAX6675 module?
-5. **PWM Frequency Details**:
-   - Target PWM frequency for the Fan (e.g., 25 kHz)?
-   - Target PWM frequency for the Heating Device (e.g., low-frequency SSR PWM)?
-6. **SSD1306 Displays Setup**:
-   - Display resolution (e.g., 128x64 or 128x32)?
-   - SPI topology: Shared SPI bus for all OLEDs and MAX6675 with dedicated Chip Select (`CS`), Data/Command (`DC`), and Reset (`RES`) lines?
-7. **Trend Diagram Window**:
-   - Time window (e.g., 60 seconds) and plot update rate for the real-time diagram on the OLEDs.
+3. **Modbus RTU Specifications**: **[Decided]** Slave ID defined in `config.json`; Holding Registers for Actors (`modbus_holding_reg`); Input Registers for Sensors (`modbus_input_reg`); Temperature scaling fixed-point x10.
+4. **Raspi Pico Pinout & Wiring (Chapter 2.1)**: **[Decided]** All GPIO pin allocations (PWM outputs, SPI buses, Chip Select lines, DC, RESET) are defined in `config.json` and parsed at build time.
+5. **PWM Frequency Details**: **[Decided]** Defined in `config.json` per actor. Defaults: Fan = `25000` Hz (25 kHz), Heating Device = `2` Hz.
+6. **SSD1306 Displays Setup**: **[Decided]** Resolution is fixed to 128x64 pixels. SPI pinout and display CS assignments defined in `config.json`.
+7. **Trend Diagram Window**: **[Decided]** Configured via `config.json` under `display_defaults` (`graph_time_window_s` and `update_rate_ms`).
 
 ---
 
@@ -115,7 +112,6 @@ Below is a sample `config.json` configuration file demonstrating the structure f
     }
   ],
   "display_defaults": {
-    "resolution": "128x64",
     "dc_pin": 20,
     "reset_pin": 21,
     "update_rate_ms": 100,
@@ -127,7 +123,7 @@ Below is a sample `config.json` configuration file demonstrating the structure f
       "name": "FAN",
       "pin": 15,
       "pwm_frequency_hz": 25000,
-      "modbus_register": 0,
+      "modbus_holding_reg": 0,
       "display": {
         "spi_bus": 0,
         "cs_pin": 17
@@ -137,8 +133,8 @@ Below is a sample `config.json` configuration file demonstrating the structure f
       "id": "heater",
       "name": "HEATER",
       "pin": 14,
-      "pwm_frequency_hz": 10,
-      "modbus_register": 1,
+      "pwm_frequency_hz": 2,
+      "modbus_holding_reg": 1,
       "display": {
         "spi_bus": 0,
         "cs_pin": 13
@@ -152,7 +148,7 @@ Below is a sample `config.json` configuration file demonstrating the structure f
       "type": "MAX6675",
       "spi_bus": 0,
       "cs_pin": 12,
-      "modbus_register": 0,
+      "modbus_input_reg": 0,
       "display": {
         "spi_bus": 0,
         "cs_pin": 11
@@ -163,9 +159,9 @@ Below is a sample `config.json` configuration file demonstrating the structure f
 ```
 
 ### Key Elements of this Configuration:
-1. **`system`**: Defines global parameters including device name and Modbus Slave ID.
+1. **`system`**: Defines global parameters including device name and Modbus Slave ID (`modbus_slave_id`).
 2. **`spi_buses`**: Centralizes shared SPI bus hardware definitions (SCK, MOSI, MISO pin assignments) for referenced `bus_id`s.
-3. **`display_defaults`**: Establishes common display parameters (resolution, shared Data/Command `dc_pin`, Reset `reset_pin`, refresh rate, and graph time window) so each component only specifies its Chip Select (`cs_pin`).
-4. **`actors`**: Defines output components with their name, GPIO pin, PWM frequency, Modbus holding register index, and paired display `cs_pin`.
-5. **`sensors`**: Defines input devices with their name, IC type (`MAX6675`), SPI bus & CS pin, Modbus input register index, and paired display `cs_pin`.
+3. **`display_defaults`**: Establishes common display parameters (shared Data/Command `dc_pin`, Reset `reset_pin`, refresh rate, and graph time window) so each component only specifies its Chip Select (`cs_pin`).
+4. **`actors`**: Defines output components with their name, GPIO pin, PWM frequency, Modbus holding register index (`modbus_holding_reg`), and paired display `cs_pin`.
+5. **`sensors`**: Defines input devices with their name, IC type (`MAX6675`), SPI bus & CS pin, Modbus input register index (`modbus_input_reg`), and paired display `cs_pin`.
 
