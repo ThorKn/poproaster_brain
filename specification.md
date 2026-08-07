@@ -20,12 +20,28 @@ Actors represent controllable hardware output devices on the coffee roaster.
 * **PWM Requirements**:
   * Each actor's target PWM frequency (`pwm_frequency_hz`) is defined in `config.json` and parsed at build time.
   * Duty cycles range from 0% to 100%, controllable via Modbus RTU holding registers from Artisan.
+* **Heating Indicator LED (`status_led_pin`)**:
+  * An optional GPIO output pin can be configured for the Heating Device to drive a physical status LED.
+  * **Solid ON**: Heating duty cycle is > 0%.
+  * **OFF**: Heating duty cycle is 0%.
+  * **Slow Blinking**: Modbus communication watchdog warning phase (when serial commands cease, prior to 5-second emergency shutdown).
 * **Extensibility**: The system must support adding additional actors (e.g., agitator motor, cooling fan) dynamically via configuration.
 
 ### 2.3. Sensors
 Sensors monitor physical state metrics of the roasting process.
 * **Initial Sensor**:
   1. **Temperature Sensor**: Single thermocouple driven by a MAX6675 SPI IC.
+* **Fault & Error Handling**:
+  * **Thermocouple Disconnect Detection**: The MAX6675 chip detects open thermocouple circuits (Bit D2 = 1).
+  * **OLED Display**: Shows `"ERR"` instead of numerical temperature when a fault occurs.
+  * **Modbus Telemetry**: Transmits sentinel value `-1` (represented as `-10` in x10 fixed-point format) to indicate invalid/error state to Artisan.
+  * **Thermal Safety Interlock**: If the Bean Temperature sensor enters an error state, the firmware automatically forces the Heating Device to `0%` duty cycle.
+* **Error Recovery Procedure**:
+  * **Self-Healing Polling**: The Pico continues polling the MAX6675 at the configured interval (`sensor_defaults.poll_interval_ms`).
+  * **Automatic Restoration**: When a valid thermocouple connection is re-established and 2 consecutive valid temperature readings are confirmed:
+    1. The OLED display clears `"ERR"` and resumes live numerical temperature readings and trend graphing.
+    2. Modbus input registers resume transmitting valid temperature telemetry.
+    3. The thermal safety interlock disengages, enabling the Heating Device to accept duty cycle commands again via Modbus.
 * **Extensibility**: The system must support adding additional temperature or environmental sensors in future development.
 
 ### 2.4. Displays
@@ -65,43 +81,52 @@ Every actor and every sensor is paired with its own dedicated physical display t
 * **Format & Storage**: The system configuration is defined in a `config.json` file.
 * **Build-Time Processing**: The `config.json` file is parsed at **pre-compile / build time** (via a generator script during the build process). This creates static C++ configuration data structures embedded directly into firmware memory, avoiding runtime JSON parsing overhead and dynamic memory allocation on the Pico.
 * **Configuration Scope**:
-  * **System Settings**: Device identifier, Modbus Slave ID (`modbus_slave_id`).
-  * **Actors Definition**: Name, ID, hardware PWM GPIO pin, target PWM frequency (Hz), Modbus holding register assignment (`modbus_holding_reg`), and paired OLED display configuration.
-  * **Sensors Definition**: Name, ID, sensor chip type (e.g. MAX6675), SPI bus & pin assignments (SCK, SO, CS), Modbus input register assignment (`modbus_input_reg`), and paired OLED display configuration.
-  * **Displays Definition**: Shared SPI bus pins (SCK, MOSI, D/C, RESET), update rates (`update_rate_ms`), trend diagram time window (`graph_time_window_s`), and individual CS pin assignments for each actor/sensor screen (fixed 128x64 resolution).
-* **Configuration Example**: See [Appendix B](#appendix-b-configuration-example-configjson) for a complete `config.json` example schema.
+  * **System Settings**: Device identifier, Modbus Slave ID (`modbus_slave_id`), and Watchdog timeout (`modbus_timeout_ms`).
+  * **Actors Definition**: Name, ID, hardware PWM GPIO pin, target PWM frequency (Hz), optional status LED pin (`status_led_pin`), Modbus holding register assignment (`modbus_holding_reg`), and paired OLED display Chip Select pin (`display_cs_pin`).
+  * **Sensors Definition**: Name, ID, sensor chip type (e.g. MAX6675), SPI bus & pin assignments (SCK, SO, CS), Modbus input register assignment (`modbus_input_reg`), global polling interval (`sensor_defaults.poll_interval_ms`), and paired OLED display Chip Select pin (`display_cs_pin`).
+  * **Displays Definition**: Shared SPI bus pins (SCK, MOSI, D/C, RESET), update rates (`update_rate_ms`), trend diagram time window (`graph_time_window_s`), display orientation (`rotation`), and individual CS pin assignments for each actor/sensor screen (`display_cs_pin`, fixed 128x64 resolution).
+* **Configuration Example**: See [Appendix](#appendix-configuration-example-configjson) for a complete `config.json` example schema.
 
-### 3.3. Modbus Communication
+### 3.3. Modbus Communication & Watchdog Safety
 * **Transport**: Modbus RTU protocol over Pico USB CDC virtual serial stream connected to host laptop.
 * **Slave Address**: Parsed dynamically from `config.json` (`system.modbus_slave_id`, default `1`).
 * **Register Architecture**:
   * **Holding Registers (`modbus_holding_reg`)**: Read/Write registers mapped to **Actors** for Artisan control. Values represent duty cycle percentages (`0` to `100` %).
   * **Input Registers (`modbus_input_reg`)**: Read-only registers mapped to **Sensors** for Artisan telemetry polling.
 * **Data Scaling Strategy**: Fixed-point 1 decimal place (Scale factor `x10`). Temperature readings (e.g., `204.5°C`) are transmitted as signed 16-bit integer values (e.g., `2045`). Artisan applies divisor `/10`.
+* **Communication Watchdog Timeout (`modbus_timeout_ms`)**:
+  * Configured in `system` (Default: `5000` ms / 5 seconds).
+  * If no Modbus read/write frame is received from Artisan within 5 seconds:
+    1. **Warning Phase**: Heater Status LED blinks slowly to signal impending timeout.
+    2. **Emergency Shutdown**: Heating Device duty cycle is automatically forced to `0%`.
+    3. **LED Shutdown**: Heater Status LED turns OFF once shutdown completes.
+* **Watchdog Recovery Procedure**:
+  * **Automatic Resumption**: Upon receiving a new valid Modbus read or write frame from Artisan, the watchdog timer resets immediately.
+  * **Safe Restart Policy**: To prevent sudden unexpected heating surges upon USB reconnection, all actor holding registers remain at `0%` until Artisan sends an explicit new write command. Slow LED blinking clears immediately, returning the status LED to solid OFF (until a non-zero duty cycle is commanded).
+
+### 3.4. Configuration Validation (Compile-Time Test Cases)
+To guarantee error-free firmware execution and hardware safety, the pre-compile configuration generator script validates `config.json` against the following rules before building the binary:
+
+1. **GPIO Collision Test**: Verify that every assigned GPIO pin (SPI SCK, MOSI, MISO, D/C, RESET, `display_cs_pin` values, actor PWM pins, and `status_led_pin`) is unique across the entire configuration.
+2. **GPIO Range Test**: Ensure all GPIO pin numbers fall within the valid RP2040 hardware GPIO range (`0` to `29`).
+3. **PWM Slice Conflict Test**: Verify that any two actors sharing the same RP2040 hardware PWM slice have matching PWM frequencies (`pwm_frequency_hz`), preventing frequency register collisions on shared PWM hardware slices.
+4. **Modbus Holding Register Uniqueness Test**: Ensure all `modbus_holding_reg` indices are unique across all actors and non-negative.
+5. **Modbus Input Register Uniqueness Test**: Ensure all `modbus_input_reg` indices are unique across all sensors and non-negative.
+6. **SPI Bus Assignment Test**: Verify that all `spi_bus` references match a declared `bus_id` in `spi_buses`.
+7. **Display CS Assignment Test**: Verify that every actor and sensor has a valid, non-null `display_cs_pin` declared for its dedicated SSD1306 OLED display.
+8. **Required Fields & Timeout Test**: Ensure all obligatory fields (`system.device_name`, `system.modbus_slave_id`, `system.modbus_timeout_ms`, `spi_buses`, `display_defaults`, `actors`, `sensors`) are present, non-empty, and valid.
 
 ---
 
-## Appendix A: Open Questions List
-*(This list collects technical and design questions to be answered together later in our planning process.)*
-
-1. **Programming Language & Framework**: **[Decided]** Raspberry Pi Pico C/C++ SDK.
-2. **Configuration Format & Parsing**: **[Decided]** `config.json` file parsed at pre-compile/build time into static C++ configuration structures.
-3. **Modbus RTU Specifications**: **[Decided]** Slave ID defined in `config.json`; Holding Registers for Actors (`modbus_holding_reg`); Input Registers for Sensors (`modbus_input_reg`); Temperature scaling fixed-point x10.
-4. **Raspi Pico Pinout & Wiring (Chapter 2.1)**: **[Decided]** All GPIO pin allocations (PWM outputs, SPI buses, Chip Select lines, DC, RESET) are defined in `config.json` and parsed at build time.
-5. **PWM Frequency Details**: **[Decided]** Defined in `config.json` per actor. Defaults: Fan = `25000` Hz (25 kHz), Heating Device = `2` Hz.
-6. **SSD1306 Displays Setup**: **[Decided]** Resolution is fixed to 128x64 pixels. SPI pinout and display CS assignments defined in `config.json`.
-7. **Trend Diagram Window**: **[Decided]** Configured via `config.json` under `display_defaults` (`graph_time_window_s` and `update_rate_ms`).
-
----
-
-## Appendix B: Configuration Example (`config.json`)
-Below is a sample `config.json` configuration file demonstrating the structure for system settings, shared SPI buses, display defaults, actors (fan and heater), and sensors (MAX6675 thermocouple):
+## Appendix: Configuration Example (`config.json`)
+Below is a sample `config.json` configuration file (stored in [config.json](file:///home/moss/Documents/hardware/popRoaster/poproaster_brain/config.json)) demonstrating the structure for system settings, shared SPI buses, display defaults, sensor defaults, actors (fan and heater with status LED), and sensors (MAX6675 thermocouple):
 
 ```json
 {
   "system": {
     "device_name": "PopRoaster Brain",
-    "modbus_slave_id": 1
+    "modbus_slave_id": 1,
+    "modbus_timeout_ms": 5000
   },
   "spi_buses": [
     {
@@ -115,7 +140,11 @@ Below is a sample `config.json` configuration file demonstrating the structure f
     "dc_pin": 20,
     "reset_pin": 21,
     "update_rate_ms": 100,
-    "graph_time_window_s": 60
+    "graph_time_window_s": 60,
+    "rotation": 0
+  },
+  "sensor_defaults": {
+    "poll_interval_ms": 250
   },
   "actors": [
     {
@@ -124,21 +153,16 @@ Below is a sample `config.json` configuration file demonstrating the structure f
       "pin": 15,
       "pwm_frequency_hz": 25000,
       "modbus_holding_reg": 0,
-      "display": {
-        "spi_bus": 0,
-        "cs_pin": 17
-      }
+      "display_cs_pin": 17
     },
     {
       "id": "heater",
       "name": "HEATER",
       "pin": 14,
       "pwm_frequency_hz": 2,
+      "status_led_pin": 22,
       "modbus_holding_reg": 1,
-      "display": {
-        "spi_bus": 0,
-        "cs_pin": 13
-      }
+      "display_cs_pin": 13
     }
   ],
   "sensors": [
@@ -149,19 +173,18 @@ Below is a sample `config.json` configuration file demonstrating the structure f
       "spi_bus": 0,
       "cs_pin": 12,
       "modbus_input_reg": 0,
-      "display": {
-        "spi_bus": 0,
-        "cs_pin": 11
-      }
+      "display_cs_pin": 11
     }
   ]
 }
 ```
 
 ### Key Elements of this Configuration:
-1. **`system`**: Defines global parameters including device name and Modbus Slave ID (`modbus_slave_id`).
+1. **`system`**: Defines global parameters including device name, Modbus Slave ID (`modbus_slave_id`), and Watchdog timeout (`modbus_timeout_ms`).
 2. **`spi_buses`**: Centralizes shared SPI bus hardware definitions (SCK, MOSI, MISO pin assignments) for referenced `bus_id`s.
-3. **`display_defaults`**: Establishes common display parameters (shared Data/Command `dc_pin`, Reset `reset_pin`, refresh rate, and graph time window) so each component only specifies its Chip Select (`cs_pin`).
-4. **`actors`**: Defines output components with their name, GPIO pin, PWM frequency, Modbus holding register index (`modbus_holding_reg`), and paired display `cs_pin`.
-5. **`sensors`**: Defines input devices with their name, IC type (`MAX6675`), SPI bus & CS pin, Modbus input register index (`modbus_input_reg`), and paired display `cs_pin`.
+3. **`display_defaults`**: Establishes common display parameters (shared Data/Command `dc_pin`, Reset `reset_pin`, refresh rate, graph time window, and orientation) so each component only specifies its Chip Select pin (`display_cs_pin`).
+4. **`sensor_defaults`**: Establishes global polling interval (`poll_interval_ms`) for sensor reading loops.
+5. **`actors`**: Defines output components with their name, GPIO pin, PWM frequency, optional `status_led_pin`, Modbus holding register index (`modbus_holding_reg`), and paired display CS pin (`display_cs_pin`).
+6. **`sensors`**: Defines input devices with their name, IC type (`MAX6675`), SPI bus & CS pin, Modbus input register index (`modbus_input_reg`), and paired display CS pin (`display_cs_pin`).
+
 

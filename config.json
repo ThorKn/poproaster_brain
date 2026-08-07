@@ -1,0 +1,55 @@
+{
+  "system": {
+    "device_name": "PopRoaster Brain",
+    "modbus_slave_id": 1,
+    "modbus_timeout_ms": 5000
+  },
+  "spi_buses": [
+    {
+      "bus_id": 0,
+      "sck_pin": 18,
+      "mosi_pin": 19,
+      "miso_pin": 16
+    }
+  ],
+  "display_defaults": {
+    "dc_pin": 20,
+    "reset_pin": 21,
+    "update_rate_ms": 100,
+    "graph_time_window_s": 60,
+    "rotation": 0
+  },
+  "sensor_defaults": {
+    "poll_interval_ms": 250
+  },
+  "actors": [
+    {
+      "id": "fan",
+      "name": "FAN",
+      "pin": 15,
+      "pwm_frequency_hz": 25000,
+      "modbus_holding_reg": 0,
+      "display_cs_pin": 17
+    },
+    {
+      "id": "heater",
+      "name": "HEATER",
+      "pin": 14,
+      "pwm_frequency_hz": 2,
+      "status_led_pin": 22,
+      "modbus_holding_reg": 1,
+      "display_cs_pin": 13
+    }
+  ],
+  "sensors": [
+    {
+      "id": "temp_bean",
+      "name": "BEAN TEMP",
+      "type": "MAX6675",
+      "spi_bus": 0,
+      "cs_pin": 12,
+      "modbus_input_reg": 0,
+      "display_cs_pin": 11
+    }
+  ]
+}
