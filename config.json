@@ -34,11 +34,11 @@
     {
       "id": "heater",
       "name": "HEATER",
-      "pin": 14,
+      "pin": 13,
       "pwm_frequency_hz": 2,
       "status_led_pin": 22,
       "modbus_holding_reg": 1,
-      "display_cs_pin": 13
+      "display_cs_pin": 14
     }
   ],
   "sensors": [

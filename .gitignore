@@ -1,0 +1,7 @@
+build/
+venv/
+.venv/
+pico-sdk/
+__pycache__/
+*.pyc
+!.vscode/*
