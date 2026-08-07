@@ -2,6 +2,26 @@ import time
 import queue
 from PyQt6.QtCore import QThread, pyqtSignal
 
+def _read_input_registers(client, address, count, slave_id):
+    """Compatible helper for read_input_registers across pymodbus versions"""
+    try:
+        return client.read_input_registers(address, count=count, device_id=slave_id)
+    except TypeError:
+        try:
+            return client.read_input_registers(address, count=count, slave=slave_id)
+        except TypeError:
+            return client.read_input_registers(address, count=count, unit=slave_id)
+
+def _write_register(client, address, value, slave_id):
+    """Compatible helper for write_register across pymodbus versions"""
+    try:
+        return client.write_register(address, value, device_id=slave_id)
+    except TypeError:
+        try:
+            return client.write_register(address, value, slave=slave_id)
+        except TypeError:
+            return client.write_register(address, value, unit=slave_id)
+
 class ModbusWorker(QThread):
     # Signals
     connection_status_changed = pyqtSignal(str, str) # (text_status, state_level: "connected"/"warning"/"disconnected")
@@ -65,7 +85,7 @@ class ModbusWorker(QThread):
                 try:
                     reg, val = self.write_queue.get_nowait()
                     t0 = time.time()
-                    res = client.write_register(reg, val, slave=self.slave_id)
+                    res = _write_register(client, reg, val, self.slave_id)
                     latency = int((time.time() - t0) * 1000)
 
                     if res.isError():
@@ -87,7 +107,7 @@ class ModbusWorker(QThread):
 
                     t0 = time.time()
                     try:
-                        res = client.read_input_registers(input_reg, count=1, slave=self.slave_id)
+                        res = _read_input_registers(client, input_reg, 1, self.slave_id)
                         latency = int((time.time() - t0) * 1000)
 
                         if res.isError():
