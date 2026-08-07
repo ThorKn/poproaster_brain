@@ -46,7 +46,7 @@ struct ActorConfig {
 };
 constexpr ActorConfig ACTORS[] = {
     {"fan", "FAN", 15, 25000, -1, 0, 17},
-    {"heater", "HEATER", 13, 2, 22, 1, 14},
+    {"heater", "HEATER", 13, 2, 25, 1, 14},
 };
 
 // Sensor Definitions

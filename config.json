@@ -36,7 +36,7 @@
       "name": "HEATER",
       "pin": 13,
       "pwm_frequency_hz": 2,
-      "status_led_pin": 22,
+      "status_led_pin": 25,
       "modbus_holding_reg": 1,
       "display_cs_pin": 14
     }
